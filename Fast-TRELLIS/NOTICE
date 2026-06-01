@@ -1,0 +1,35 @@
+faster-trellis
+Copyright (c) 2026 Krishi Attri
+Licensed under the MIT License (see LICENSE).
+
+This product includes and builds upon the following work.
+
+-------------------------------------------------------------------------------
+TRELLIS
+-------------------------------------------------------------------------------
+microsoft/TRELLIS — Structured 3D Latents for Scalable and Versatile 3D
+Generation (Xiang et al., CVPR 2025).
+Copyright (c) Microsoft Corporation. Licensed under the MIT License.
+https://github.com/microsoft/TRELLIS
+
+The TRELLIS image-to-3D pipeline, model architecture, and pretrained weights are
+the work of the TRELLIS authors. faster-trellis adds a training-free inference
+acceleration layer on top of that pipeline and does not modify the weights.
+
+-------------------------------------------------------------------------------
+Methods implemented in this repository
+-------------------------------------------------------------------------------
+HiCache: Training-free Acceleration of Diffusion Models via Hermite Polynomial
+Feature Forecasting. arXiv:2508.16984.
+  Implemented in trellis/pipelines/samplers/hicache.py.
+
+Adaptive Guidance: Training-free Acceleration of Conditional Diffusion Models
+(Castillo et al.). arXiv:2312.12487.
+  Implemented in trellis/pipelines/samplers/adaptive_cfg.py.
+
+-------------------------------------------------------------------------------
+Acceleration implementation
+-------------------------------------------------------------------------------
+The HiCache Hermite-forecast sampler, the Adaptive-Guidance CFG-skip sampler,
+their composed full-stack sampler, and the enable_faster_mode integration are
+authored by Krishi Attri (krishiattriwork@gmail.com).
