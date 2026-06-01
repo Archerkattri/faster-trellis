@@ -36,7 +36,7 @@ pipeline.enable_faster_mode("faster")     # one line → ~3.5× faster, quality 
 
 ```bash
 git clone --recurse-submodules https://github.com/Archerkattri/faster-trellis
-cd faster-trellis/Fast-TRELLIS
+cd faster-trellis
 # TRELLIS deps (CUDA toolchain required); see setup.sh for the full option list.
 . ./setup.sh --new-env --basic --xformers --flash-attn --spconv --nvdiffrast
 ```
@@ -50,8 +50,8 @@ pipeline.enable_faster_mode("faster")                 # ← the only added line
 outputs = pipeline.run(image, formats=["mesh", "gaussian", "radiance_field"])
 ```
 
-Runnable scripts: `Fast-TRELLIS/example.py` (`--mode {faster,hicache,none}`) and
-`Fast-TRELLIS/example_faster.py` (minimal, annotated).
+Runnable scripts: `example.py` (`--mode {faster,hicache,none}`) and
+`example_faster.py` (minimal, annotated).
 
 <details>
 <summary><b>Blackwell (RTX 50-series / sm_120) note</b></summary>
@@ -141,7 +141,7 @@ HiCache removes the *skip* steps entirely. Stacking both is the `"faster"` mode.
 ## Tuning
 
 Defaults live in the accelerated sampler config
-(`Fast-TRELLIS/trellis/pipelines/samplers/faster_samplers.py`):
+(`trellis/pipelines/samplers/faster_samplers.py`):
 
 | knob | default | meaning |
 |---|:--:|---|
@@ -157,10 +157,10 @@ Defaults live in the accelerated sampler config
 ## What changed vs clean TRELLIS
 
 All Microsoft TRELLIS model / decoder code is **unmodified**. Added under
-`Fast-TRELLIS/trellis/pipelines/samplers/`: `hicache.py`, `adaptive_cfg.py`,
+`trellis/pipelines/samplers/`: `hicache.py`, `adaptive_cfg.py`,
 `faster_samplers.py` (the accelerated sampler classes), plus the `enable_faster_mode()` API in
-`trellis_image_to_3d.py`. The accelerators are independent re-implementations of the cited
-papers — **no Fast-TRELLIS code is present**.
+`trellis/pipelines/trellis_image_to_3d.py`. The accelerators are independent re-implementations
+of the cited papers — **no Fast-TRELLIS code is present**.
 
 ---
 
@@ -172,7 +172,7 @@ papers — **no Fast-TRELLIS code is present**.
 | **HiCache** | arXiv:2508.16984 — Hermite-polynomial velocity forecasting |
 | **Adaptive Guidance** | Castillo et al., arXiv:2312.12487 — unconditional-pass skipping |
 
-MIT (see `Fast-TRELLIS/LICENSE`, `Fast-TRELLIS/NOTICE`). Accelerations © 2026 Krishi Attri;
+MIT (see [`LICENSE`](LICENSE), [`NOTICE`](NOTICE)). Accelerations © 2026 Krishi Attri;
 TRELLIS pipeline / architecture / weights © their authors.
 
 **Krishi Attri** · krishiattriwork@gmail.com · [github.com/Archerkattri](https://github.com/Archerkattri)
