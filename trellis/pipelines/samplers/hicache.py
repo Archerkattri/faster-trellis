@@ -1,18 +1,18 @@
 """HiCache: Hermite-polynomial velocity forecasting for TRELLIS v1.
 
 Training-free inference acceleration for the TRELLIS v1
-``TrellisImageTo3DPipeline``. We forecast the final CFG-combined velocity at
-*skipped* sampling steps with a **scaled (physicist's) Hermite polynomial**
-basis, which is numerically more stable than a Taylor-series forecast (see
-"why Hermite > Taylor" below).
+``TrellisImageTo3DPipeline``. The final CFG-combined velocity at *skipped*
+sampling steps is forecast with a **scaled (physicist's) Hermite polynomial**
+basis. The dual scaling keeps the high-order terms bounded, giving a more
+numerically stable forecast than the equivalent Taylor (monomial) series.
 
 Reference
 ---------
 HiCache: Training-free Acceleration of Diffusion Models via Hermite
 Polynomial Feature Forecasting (arXiv:2508.16984).
 
-Method (verbatim from the paper)
---------------------------------
+Method
+------
 Let ``F_t`` be the cached feature/velocity at the most recent compute
 ("full") step and ``N = N_interval`` the spacing between compute steps.
 At a compute step we update backward finite differences::
@@ -126,7 +126,7 @@ def hicache_init(
         "first_enhance": int(first_enhance),
         "end_enhance": int(end_enhance if end_enhance is not None else num_steps),
         "sigma": float(sigma),
-        "sigma_min": 1e-2,        # floor used by the adaptive guard, if any
+        "sigma_min": 1e-2,        # lower bound on the contraction factor sigma
         "step": 0,
         "counter": 0,            # forecasts since last compute
         "type": None,            # "full" | "forecast"

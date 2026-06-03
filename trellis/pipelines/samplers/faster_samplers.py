@@ -1,28 +1,26 @@
 """Faster-TRELLIS accelerated Flow-Euler samplers.
 
-Two training-free, drop-in accelerated variants of the stock TRELLIS v1
+Two training-free, drop-in accelerated variants of the TRELLIS v1
 ``FlowEulerGuidanceIntervalSampler`` are provided here as first-class
-registered sampler classes (not call-site monkeypatches):
+registered sampler classes (rather than call-site monkeypatches):
 
 * ``FlowEulerGuidanceIntervalSampler_hicache`` -- HiCache Hermite-polynomial
   velocity forecasting (arXiv:2508.16984). Replaces the model forward pass on
   forecast steps with a dual-scaled physicist's-Hermite extrapolation of the
-  cached final velocity. Quality-safe single accelerator.
+  cached final velocity.
 
 * ``FlowEulerGuidanceIntervalSampler_faster`` -- the full stack: HiCache plus
   Adaptive Guidance (arXiv:2312.12487). On top of HiCache it also skips the
   unconditional CFG forward pass once the conditional/unconditional predictions
   align (cosine similarity >= gamma_bar), reconstructing the CFG guidance term
-  from cached anchors. This is the default ``"faster"`` mode and the fastest
-  configuration in the Toys4K ablation.
+  from cached anchors. This is the default ``"faster"`` mode.
 
-Both classes are exact subclasses of ``FlowEulerGuidanceIntervalSampler`` and
+Both classes are subclasses of ``FlowEulerGuidanceIntervalSampler`` and
 preserve its public ``sample(...)`` contract (CFG strength, guidance interval,
-rescale_t, steps). They reuse the audited forecast math in the sibling
-``hicache`` and ``adaptive_cfg`` modules, applied to the instance at
-construction time, so a constructed instance is ready to use with no extra
-enable call. The acceleration hyper-parameters are constructor arguments with
-the ablation-winning defaults.
+rescale_t, steps). They reuse the forecast math in the sibling ``hicache`` and
+``adaptive_cfg`` modules, applied to the instance at construction time, so a
+constructed instance is ready to use with no extra enable call. The
+acceleration hyper-parameters are exposed as constructor arguments.
 """
 
 from typing import *
@@ -32,7 +30,7 @@ from . import hicache as _hicache
 from . import adaptive_cfg as _adaptive_cfg
 
 
-# Ablation-winning defaults (Toys4K, 25 steps). Do not change without a re-bench.
+# Default schedule tuned on Toys4K at 25 steps.
 _HICACHE_DEFAULTS = dict(
     interval=4,
     max_order=1,
@@ -153,4 +151,36 @@ class FlowEulerGuidanceIntervalSampler_faster(FlowEulerGuidanceIntervalSampler):
             patch_slat=self._is_sparse,
             patch_sparse_structure=not self._is_sparse,
             **self._hicache_cfg,
+        )
+
+
+class FlowEulerGuidanceIntervalSampler_adaptive(FlowEulerGuidanceIntervalSampler):
+    """Adaptive Guidance only (CFG-skip), WITHOUT HiCache velocity forecasting.
+
+    Drops the unconditional CFG pass once guidance converges and reconstructs the
+    guidance term from cached anchors — the speed/quality profile of Adaptive
+    Guidance in isolation. Mirrors the full-stack sampler but installs only
+    ``adaptive_cfg`` (no ``hicache``).
+    """
+
+    def __init__(
+        self,
+        sigma_min: float,
+        is_sparse: bool = True,
+        steps: int = 25,
+        adaptive_cfg_kwargs: Optional[dict] = None,
+    ):
+        super().__init__(sigma_min)
+        self._is_sparse = is_sparse
+        self._nominal_steps = int(steps)
+        self._adaptive_cfg = {**_ADAPTIVE_CFG_DEFAULTS, **(adaptive_cfg_kwargs or {})}
+        self._install()
+
+    def _install(self):
+        view = _SinglePatchablePipelineView(self, self._is_sparse, self._nominal_steps)
+        _adaptive_cfg.enable(
+            view,
+            patch_slat=self._is_sparse,
+            patch_sparse_structure=not self._is_sparse,
+            **self._adaptive_cfg,
         )

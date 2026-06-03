@@ -31,19 +31,19 @@ CFG cost on every aligned step.
 ------------------------------------------------------------------------------
 Caching substrate
 ------------------------------------------------------------------------------
-Vanilla AG discards guidance entirely on skip steps (``v_cfg -> v_cond``). We
-keep a strictly-superior, faithful reconstruction: the CFG *guidance term*
+The base Adaptive Guidance rule discards guidance entirely on skip steps
+(``v_cfg -> v_cond``). Instead, this implementation reconstructs it: the CFG
+*guidance term*
 
     g_t = v_cfg - v_cond = w * (v_cond - v_uncond)                           (3)
 
-is a smooth function of the diffusion step. At a *compute* step we evaluate
-both passes, cache ``g`` (anchored at the step index). At a *skip* step we do
-only the conditional pass and **forecast** ``g_t`` from the cached anchors
-instead of zeroing it, then return ``v_cond + g_forecast``. With the
-held-constant (0th-order) forecast this reduces to vanilla AG; with >= 2
-anchors we use a finite-difference (BDF2 / Newton-divided-difference)
-extrapolation that is *exact* for polynomial guidance signals, which is what
-the unit test asserts.
+is a smooth function of the diffusion step. At a *compute* step both passes are
+evaluated and ``g`` is cached (anchored at the step index). At a *skip* step
+only the conditional pass runs and ``g_t`` is **forecast** from the cached
+anchors instead of being zeroed, returning ``v_cond + g_forecast``. With the
+held-constant (0th-order) forecast this reduces to the base Adaptive Guidance
+rule; with >= 2 anchors a finite-difference (BDF2 / Newton-divided-difference)
+extrapolation is used, which is *exact* for polynomial guidance signals.
 
 State lives in a plain dict; the cached object is the guidance term ``g`` (a
 linear function of the final velocity), and skip decisions are driven by the
@@ -216,9 +216,9 @@ def _make_inference_model(sampler, state_holder):
                          cfg_strength, cfg_interval, **kwargs):
         state = state_holder["state"]
 
-        # Outside the guidance interval: behave exactly like the stock mixin
-        # (single conditional pass, no CFG, no caching) and do NOT advance the
-        # adaptive step counter -- those steps are not CFG steps.
+        # Outside the guidance interval: behave like the base guidance-interval
+        # mixin (single conditional pass, no CFG, no caching) and do NOT advance
+        # the adaptive step counter -- those steps are not CFG steps.
         if not (cfg_interval[0] <= t <= cfg_interval[1]):
             return self._adaptive_base_inference(model, x_t, t, cond, **kwargs)
 

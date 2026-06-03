@@ -2,7 +2,29 @@ import torch
 from ...modules.sparse import SparseTensor
 from easydict import EasyDict as edict
 from .utils_cube import *
-from .flexicubes.flexicubes import FlexiCubes
+
+
+def _load_flexicubes():
+    """Import FlexiCubes lazily.
+
+    FlexiCubes lives in the optional ``flexicubes`` git submodule and is only
+    needed to build the mesh decoder. Deferring its import to that single
+    construction site keeps the rest of the ``trellis`` package importable when
+    the submodule is absent (e.g. for the gaussian / radiance-field formats),
+    and surfaces a clear, actionable message if mesh output is requested without
+    the submodule checked out.
+    """
+    try:
+        from .flexicubes.flexicubes import FlexiCubes
+    except ModuleNotFoundError as e:
+        raise ModuleNotFoundError(
+            "The FlexiCubes mesh extractor (trellis/representations/mesh/flexicubes) "
+            "is required for formats=['mesh'] but is not checked out. Fetch the git "
+            "submodule once with `git submodule update --init` (or clone with "
+            "--recurse-submodules). The 'gaussian' and 'radiance_field' formats do "
+            "not need it."
+        ) from e
+    return FlexiCubes
 
 
 class MeshExtractResult:
@@ -63,7 +85,7 @@ class SparseFeatures2Mesh:
         super().__init__()
         self.device=device
         self.res = res
-        self.mesh_extractor = FlexiCubes(device=device)
+        self.mesh_extractor = _load_flexicubes()(device=device)
         self.sdf_bias = -1.0 / res
         verts, cube = construct_dense_grid(self.res, self.device)
         self.reg_c = cube.to(self.device)

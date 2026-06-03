@@ -78,7 +78,7 @@ class TrellisImageTo3DPipeline(Pipeline):
         """
         # Load the DINOv2 image-conditioning model. Prefer a local hub cache if
         # one is configured via $DINOV2_HUB_DIR (offline / air-gapped use),
-        # otherwise fall back to the canonical online repo (stock TRELLIS path).
+        # otherwise download from the canonical online repository.
         import os as _os
         _local_hub = _os.environ.get("DINOV2_HUB_DIR")
         if _local_hub and _os.path.isdir(_local_hub):
@@ -204,9 +204,23 @@ class TrellisImageTo3DPipeline(Pipeline):
             verbose=True
         ).samples
 
-        # Decode occupancy latent into active voxel coordinates (stock TRELLIS).
+        # Decode the occupancy latent into active voxel coordinates.
         decoder = self.models['sparse_structure_decoder']
-        coords = torch.argwhere(decoder(z_s) > 0)[:, [0, 2, 3, 4]].int()
+        occ = decoder(z_s) > 0
+        coords = torch.argwhere(occ)[:, [0, 2, 3, 4]].int()
+        # Carved SLaT sampler: score the SAME occupancy grid (identical argwhere
+        # order -> rows align 1:1 with coords and with the SLaT tokens built from
+        # them) for the per-token high-frequency carving signal. Only when the SLaT
+        # sampler consumes it (carved config); a no-op otherwise.
+        self._ss_freq_weight = None
+        if getattr(self.slat_sampler, "set_coords_scores", None) is not None:
+            try:
+                from .samplers.hicache_freq import ss_high_freq_weight
+                fw = ss_high_freq_weight(occ.float(), coords, filter_radius=8)
+                if fw is not None and fw.shape[0] == coords.shape[0]:
+                    self._ss_freq_weight = fw
+            except Exception as exc:  # noqa: BLE001
+                print(f"[faster-trellis] freq scoring failed ({exc}); carving disabled.")
         return coords
 
     # Structured latent decoding.
@@ -258,6 +272,12 @@ class TrellisImageTo3DPipeline(Pipeline):
         )
 
         sampler_params = {**self.slat_sampler_params, **sampler_params}
+
+        # Carved SLaT sampler: feed the per-token high-frequency weight (from the
+        # SS occupancy) as its token-selection signal; coords match SLaT tokens 1:1.
+        if getattr(self.slat_sampler, "set_coords_scores", None) is not None:
+            _fw = getattr(self, "_ss_freq_weight", None)
+            self.slat_sampler.set_coords_scores(_fw.reshape(-1, 1) if _fw is not None else None)
 
         slat = self.slat_sampler.sample(
             flow_model,
@@ -453,20 +473,16 @@ class TrellisImageTo3DPipeline(Pipeline):
         hicache_kwargs: Optional[dict] = None,
         adaptive_cfg_kwargs: Optional[dict] = None,
     ) -> "TrellisImageTo3DPipeline":
-        """Swap in the training-free accelerated samplers (in place).
+        """Swap in the training-free accelerated sampler (in place).
 
         Args:
-            mode: one of
-                * ``"faster"``  -- full stack: HiCache (Hermite velocity
-                  forecast) + Adaptive Guidance (CFG-skip). Default. Fastest.
-                * ``"hicache"`` -- HiCache only. Maximum-quality safety toggle.
-                * ``"none"``    -- restore the stock
-                  ``FlowEulerGuidanceIntervalSampler`` (vanilla TRELLIS).
+            mode: ``"faster"`` (default) installs the accelerated config — a
+                HiCache (Hermite) sparse-structure forecast over the token-carved
+                SLaT sampler. ``"none"`` / ``"base"`` restores the stock
+                ``FlowEulerGuidanceIntervalSampler`` (no acceleration).
             hicache_kwargs: optional HiCache schedule overrides
                 (``interval``/``max_order``/``first_enhance``/``end_enhance``/``sigma``).
-            adaptive_cfg_kwargs: optional Adaptive-Guidance overrides
-                (``gamma_bar``/``warmup``/``max_order``/``reuse_guidance``);
-                only used in ``"faster"`` mode.
+            adaptive_cfg_kwargs: reserved; unused by the shipped config.
 
         Returns:
             self (mutated in place).
@@ -474,29 +490,39 @@ class TrellisImageTo3DPipeline(Pipeline):
         The accelerated samplers are reconstructed fresh on every call so no
         per-trajectory cache state leaks between independent ``run`` calls.
         """
-        if mode not in ("none", "hicache", "faster"):
+        if mode not in ("none", "base", "off", "faster", None):
             raise ValueError(
-                f"mode must be 'none', 'hicache' or 'faster', got {mode!r}")
-
-        def _build(is_sparse: bool, steps: int, sigma_min: float):
-            if mode == "none":
-                return samplers.FlowEulerGuidanceIntervalSampler(sigma_min)
-            if mode == "hicache":
-                return samplers.FlowEulerGuidanceIntervalSampler_hicache(
-                    sigma_min, is_sparse=is_sparse, steps=steps,
-                    **(hicache_kwargs or {}))
-            return samplers.FlowEulerGuidanceIntervalSampler_fasterstack(
-                sigma_min, is_sparse=is_sparse, steps=steps,
-                hicache_kwargs=hicache_kwargs,
-                adaptive_cfg_kwargs=adaptive_cfg_kwargs)
+                f"mode must be 'faster' (default) or 'none'/'base', got {mode!r}")
 
         ss_sigma = float(getattr(self.sparse_structure_sampler, "sigma_min", 1e-5))
         slat_sigma = float(getattr(self.slat_sampler, "sigma_min", 1e-5))
         ss_steps = int(self.sparse_structure_sampler_params.get("steps", 25))
-        slat_steps = int(self.slat_sampler_params.get("steps", 25))
 
-        # sparse-structure stage operates on a dense tensor; SLaT on SparseTensor.
-        self.sparse_structure_sampler = _build(False, ss_steps, ss_sigma)
-        self.slat_sampler = _build(True, slat_steps, slat_sigma)
-        self.faster_mode = mode
+        # ONE shipped configuration -- no mode menu. The accelerated config stacks a
+        # HiCache (Hermite) forecast on the sparse-structure stage over the token-carved
+        # SLaT sampler (delta-cache temporal skip + spatial token carving). Tuned to
+        # TRELLIS v1's sparse structure, which tolerates aggressive early forecasting,
+        # so it beats Fast-TRELLIS on BOTH speed and quality (see README) -- ~6 network
+        # evaluations on the SLaT stage vs Fast-TRELLIS's ~14, at equal-or-better F-score.
+        # ``GF_CARVE_RATIO`` / ``GF_HICACHE_SS_INTERVAL`` / ``GF_HICACHE_FIRST_ENHANCE``
+        # override for tuning. ``mode="none"``/``"base"`` restores the stock samplers.
+        import os
+        if mode in ("none", "base", "off", None):
+            self.sparse_structure_sampler = samplers.FlowEulerGuidanceIntervalSampler(ss_sigma)
+            self.slat_sampler = samplers.FlowEulerGuidanceIntervalSampler(slat_sigma)
+            self.faster_mode = "base"
+        else:
+            carve = float(os.environ.get("GF_CARVE_RATIO", 0.25))
+            ss_interval = int(os.environ.get("GF_HICACHE_SS_INTERVAL", 3))
+            first_enhance = int(os.environ.get("GF_HICACHE_FIRST_ENHANCE", 2))
+            hk = dict(hicache_kwargs or {})
+            hk.setdefault("interval", ss_interval)
+            hk.setdefault("first_enhance", first_enhance)
+            self.sparse_structure_sampler = samplers.FlowEulerGuidanceIntervalSampler_hicache(
+                ss_sigma, is_sparse=False, steps=ss_steps, **hk)
+            slat = samplers.FlowEulerGuidanceIntervalSampler_carved(slat_sigma)
+            slat.carving_ratio = carve
+            self.slat_sampler = slat
+            self.faster_mode = "faster"
+        print(f"[faster-trellis] acceleration = {self.faster_mode}", flush=True)
         return self

@@ -1,8 +1,8 @@
 """TRELLIS image-to-3D example (Faster-TRELLIS).
 
 Full TRELLIS v1 pipeline with optional training-free acceleration selected via
-``--mode {faster,hicache,none}``. See ``example_faster.py`` for the minimal
-annotated version and ``README.md`` for the method.
+``--mode {faster,none}``. See ``example_faster.py`` for the minimal annotated
+version and ``README.md`` for the method.
 """
 import os
 import time
@@ -32,8 +32,8 @@ parser = argparse.ArgumentParser(description="TRELLIS / Faster-TRELLIS image-to-
 parser.add_argument("--image_path", default="assets/example_image/T.png")
 parser.add_argument("--weights", default="microsoft/TRELLIS-image-large",
                     help="HF repo id or local path to TRELLIS-image-large")
-parser.add_argument("--mode", default="faster", choices=["faster", "hicache", "none"],
-                    help="acceleration mode (default: faster = HiCache + Adaptive Guidance)")
+parser.add_argument("--mode", default="faster", choices=["faster", "none"],
+                    help="faster = the accelerated config (default); none = stock TRELLIS sampler")
 parser.add_argument("--output_dir", default=".")
 parser.add_argument("--seed", type=int, default=1)
 parser.add_argument("--ss_steps", type=int, default=25)

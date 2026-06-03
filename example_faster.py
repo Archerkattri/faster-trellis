@@ -1,15 +1,15 @@
 """Faster-TRELLIS image-to-3D example.
 
-Identical to the stock TRELLIS ``example.py`` pipeline (gaussian / radiance
-field / mesh / GLB / PLY outputs all preserved), with a SINGLE extra call --
-``pipeline.enable_faster_mode(...)`` -- that swaps in the training-free
-accelerated samplers (HiCache Hermite velocity forecast + Adaptive Guidance).
+Runs the standard TRELLIS image-to-3D pipeline (gaussian / radiance field /
+mesh / GLB / PLY outputs are all produced), adding a single call --
+``pipeline.enable_faster_mode()`` -- that swaps in the training-free
+accelerated samplers (a HiCache Hermite sparse-structure forecast over the
+token-carved SLaT sampler).
 
 Modes
 -----
-* ``--mode faster``  : full stack (HiCache + Adaptive Guidance). Default. Fastest.
-* ``--mode hicache`` : HiCache only (maximum-quality safety toggle).
-* ``--mode none``    : vanilla TRELLIS (no acceleration).
+* ``--mode faster`` : the accelerated config (default).
+* ``--mode none``   : standard TRELLIS samplers, no acceleration.
 
 Usage
 -----
@@ -17,8 +17,9 @@ Usage
         python example_faster.py --image_path assets/example_image/T.png \
         --mode faster --weights microsoft/TRELLIS-image-large
 
-Blackwell (sm_120) note: if spconv's native algo errors on your GPU, export
-``SPARSE_CONV_BACKEND=spconv`` (and ``ATTN_BACKEND=sdpa``) before running.
+``SPCONV_ALGO`` selects the spconv sparse-convolution implementation; ``native``
+is a portable choice. If you prefer the spconv backend's own kernels, set
+``SPARSE_CONV_BACKEND=spconv`` (with ``ATTN_BACKEND=sdpa``) before running.
 """
 import os
 import time
@@ -51,8 +52,8 @@ def main():
     parser.add_argument("--weights", default="microsoft/TRELLIS-image-large",
                         help="HF repo id or local path to TRELLIS-image-large")
     parser.add_argument("--mode", default="faster",
-                        choices=["faster", "hicache", "none"],
-                        help="acceleration mode (default: faster = full stack)")
+                        choices=["faster", "none"],
+                        help="faster = the accelerated config (default); none = stock sampler")
     parser.add_argument("--output_dir", default="outputs_faster")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--ss_steps", type=int, default=25)
@@ -70,7 +71,7 @@ def main():
     pipeline = TrellisImageTo3DPipeline.from_pretrained(args.weights)
     pipeline.cuda()
 
-    # ---- the ONE extra call: enable training-free acceleration ----
+    # ---- enable training-free acceleration ----
     pipeline.enable_faster_mode(args.mode)
     print(f"Faster-TRELLIS mode: {pipeline.faster_mode}")
 
@@ -86,7 +87,7 @@ def main():
     )
     print(f"[inference] {time.time() - t0:.3f}s  (mode={args.mode})")
 
-    # ---- full set of TRELLIS outputs (unchanged) ----
+    # ---- write the full set of TRELLIS outputs ----
     if not args.skip_video:
         imageio.mimsave(str(out / "sample_gs.mp4"),
                         render_utils.render_video(outputs["gaussian"][0])["color"], fps=30)
