@@ -8,6 +8,8 @@
 
 </div>
 
+> **HiCache++ variant:** an exponential (DMD/Prony) forecast variant of this repo lives in [`faster-trellis-plus-plus`](https://github.com/Archerkattri/faster-trellis-plus-plus) — same carved-hybrid, with the sparse-structure velocity forecast on a Dynamic-Mode-Decomposition basis instead of the Hermite polynomial.
+
 `faster-trellis` is `microsoft/TRELLIS` image-to-3D with a **training-free acceleration stack** built
 into the flow-matching sampler. It forecasts and reuses the model's **final CFG-combined velocity**
 so the sampler spends far fewer, cheaper network evaluations per asset — the weights, decoders, and
