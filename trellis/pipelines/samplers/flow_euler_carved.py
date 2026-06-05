@@ -84,8 +84,6 @@ class FlowEulerSampler_carved(FlowEulerSampler):
         self.cache_dic['dir_weight'] = self.dir_weight
         self.cache_dic['first_enhance'] = self.ret_steps
         
-        # sample_feats:torch.Size([15201, 8]),noise_coords:torch.Size([15201, 4])
-        print(f"sample_feats:{sample.feats.shape},noise_coords:{sample.coords.shape}")
   
         N,C = sample.feats.shape
         self.args.effective_steps = steps
@@ -104,21 +102,17 @@ class FlowEulerSampler_carved(FlowEulerSampler):
             self.current['is_token_active'] = False
             current_step = self.LEADER.current_step
 
-            print(f"Timestep: {current_step},{self.LEADER.full_sampling_steps}")
             if self.current['use_token'] and cache['prev_v'] is not None and current_step >= self.LEADER.full_sampling_steps:
                 self.current['num_to_skip'] = int(self.carving_ratio * N)
                 if self.current['num_to_skip'] > 0 and self.current['num_to_skip'] < N:
                     self.current['is_token_active'] = True
 
             out = self.sample_once(model, sample, t, t_prev, cond, **kwargs)
-            # keys :   torch.Size([1, 8, 16, 16, 16]).torch.Size([1, 8, 16, 16, 16])
-            # print(f"✅ keys :   {out['pred_x_prev'].shape}.{out['pred_x_0'].shape}")
 
             sample = out.pred_x_prev
             ret.pred_x_t.append(out.pred_x_prev)
             ret.pred_x_0.append(out.pred_x_0)
 
-        print("Activated steps:   ", self.current['activated_steps'])
         ret.samples = sample
         return ret
 
@@ -136,26 +130,17 @@ class FlowEulerSampler_carved(FlowEulerSampler):
         should_calc = faster_cal_type(self.cache_dic, self.current, x_t.feats)
         velocity = None
 
-        # print(f"kwargs.keys,{kwargs.keys()}")
-        print(should_calc)
         if should_calc:
-            print("Parameters", self.current['is_token_active'], self.current['use_token'])
             if self.current['is_token_active'] and self.current['use_token']:
                 coords_scores = self.stability_tracker.coords_scores
 
-                # print(coords_scores)
-                # import pdb;pdb.set_trace()
                 self.current['cached_indices'],  self.current['fast_update_indices'] = self.stability_tracker.update_and_select_combined(self.cache_dic['cache']['prev_v'], self.current['num_to_skip'],t=0, coords_scores = coords_scores,spatial_weight=0.3)
                 
-                # torch.Size([1520]) torch.Size([13681])
-                # print(self.current['cached_indices'].shape,self.current['fast_update_indices'].shape)
-                # import pdb;pdb.set_trace()
                 # Select tokens.
                 x_input_feats = x_t.feats[self.current['fast_update_indices'], :] if self.current['is_token_active'] else x_t.feats
                 x_input_coords = x_t.coords[self.current['fast_update_indices'], :] if self.current['is_token_active'] else x_t.coords
                 x_input = sp.SparseTensor(feats=x_input_feats, coords=x_input_coords)
                 
-                print(f"Token shapes before/after selection: {x_t.feats.shape},{x_input_feats.shape}")
                 pred_x_0, pred_eps, pred_v = self._get_model_prediction(model, x_input, t, cond, **kwargs)
                 velocity_feats  = pred_v.feats
             else:
