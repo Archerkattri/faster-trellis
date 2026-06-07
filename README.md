@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="assets/banner.png" alt="faster-trellis" width="680">
+
 # ⚡ faster-trellis
 
 **Training-free acceleration for [microsoft/TRELLIS](https://github.com/microsoft/TRELLIS) image-to-3D — faster *and* higher-quality than Fast-TRELLIS, in one line of code.**
