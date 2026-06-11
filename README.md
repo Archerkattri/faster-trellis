@@ -133,6 +133,20 @@ Every row uses the identical Toys4K mesh F-score harness (same Go-ICP alignment,
 
 ---
 
+
+### Sign-convention update (2026-06-10)
+
+The vendored Hermite forecast evaluated the basis at `x = -k`; the corrected convention from
+[hicache-plus-plus 1.2.0](https://github.com/Archerkattri/hicache-plus-plus) is `x = +k` (the
+upstream TaylorSeer distance convention; `-k` flips every odd-order term, extrapolating
+backwards). This fork now ships the corrected forecast. The published numbers above were
+measured with the as-released code and remain valid as-measured; re-validation on this model
+is pending. On the two family models re-validated so far on their published protocols
+(Hunyuan3D-2 mini and the SAM 3D Objects slat stage; see
+[`hunyuan2-plus`](https://github.com/Archerkattri/hunyuan2-plus) and
+[`sam3d-plus`](https://github.com/Archerkattri/sam3d-plus)), the corrected forecast matched
+the as-released quality at the published intervals.
+
 ## How it works
 
 TRELLIS v1 samples a 3D asset in two flow-matching stages — **sparse structure** (the coarse

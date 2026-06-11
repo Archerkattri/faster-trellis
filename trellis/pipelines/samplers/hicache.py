@@ -25,7 +25,7 @@ At a compute step we update backward finite differences::
 At a skipped step with forward horizon ``k`` (``k = 1 .. N-1`` steps past
 the last compute step) the velocity is forecast as::
 
-    F_hat_{t-k} = F_t + sum_{i=1}^{m} (Delta^i F_t / i!) * Htilde_i(-k)
+    F_hat_{t+k} = F_t + sum_{i=1}^{m} (Delta^i F_t / i!) * Htilde_i(k)
 
 where ``Htilde`` is the *dual-scaled* physicist's Hermite polynomial with
 contraction factor ``sigma in (0, 1)``::
@@ -34,8 +34,8 @@ contraction factor ``sigma in (0, 1)``::
     H_0(x) = 1,  H_1(x) = 2x
     H_{n+1}(x) = 2*x*H_n(x) - 2*n*H_{n-1}(x)
 
-TaylorSeer is the special case where the basis ``Htilde_i(-k)`` is
-replaced by the monomial ``(-k)^i``. The dual scaling (input scale
+TaylorSeer is the special case where the basis ``Htilde_i(k)`` is
+replaced by the monomial ``k^i``. The dual scaling (input scale
 ``sigma*x`` and coefficient scale ``sigma^n``) suppresses the exponential
 growth of the high-order Hermite terms and keeps the forecast inside the
 numerically stable oscillatory regime.
@@ -195,7 +195,7 @@ def hicache_update_derivatives(state: Dict[str, Any], feature: torch.Tensor) -> 
 def hicache_forecast(state: Dict[str, Any]) -> torch.Tensor:
     """Scaled-Hermite forecast of the velocity at the current skip step.
 
-    ``F_hat = F_t + sum_{i>=1} (Delta^i F_t / i!) * Htilde_i(-k)``.
+    ``F_hat = F_t + sum_{i>=1} (Delta^i F_t / i!) * Htilde_i(k)``.
 
     ``k`` is the number of steps elapsed since the last compute step.
     With <2 anchors only ``Delta^0`` exists and this returns the cached
@@ -208,7 +208,7 @@ def hicache_forecast(state: Dict[str, Any]) -> torch.Tensor:
     k = state["step"] - state["activated_steps"][-1]
     sigma = state["sigma"]
     base = deriv[0]
-    x = torch.tensor(float(-k), dtype=base.dtype, device=base.device)
+    x = torch.tensor(float(k), dtype=base.dtype, device=base.device)
 
     result = base
     order = 1
