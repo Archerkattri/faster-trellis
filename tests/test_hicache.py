@@ -11,16 +11,27 @@ derivative exactness on linear / constant velocity series, the compute/forecast
 schedule cadence, and far-horizon boundedness of the forecast.
 """
 
+import importlib.util
+from pathlib import Path
+
 import torch
 
-from trellis.pipelines.samplers.hicache import (
-    physicists_hermite,
-    scaled_hermite,
-    hicache_init,
-    hicache_decide,
-    hicache_update_derivatives,
-    hicache_forecast,
-)
+
+def _load_hicache():
+    path = Path(__file__).resolve().parents[1] / "trellis/pipelines/samplers/hicache.py"
+    spec = importlib.util.spec_from_file_location("hicache_under_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_hicache = _load_hicache()
+physicists_hermite = _hicache.physicists_hermite
+scaled_hermite = _hicache.scaled_hermite
+hicache_init = _hicache.hicache_init
+hicache_decide = _hicache.hicache_decide
+hicache_update_derivatives = _hicache.hicache_update_derivatives
+hicache_forecast = _hicache.hicache_forecast
 
 
 def main() -> int:

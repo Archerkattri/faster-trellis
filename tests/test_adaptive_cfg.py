@@ -11,14 +11,25 @@ series, the single-/zero-anchor edge cases, cosine-similarity extremes, the
 CFG-skip decision logic, and end-to-end skip-step velocity reconstruction.
 """
 
+import importlib.util
+from pathlib import Path
+
 import torch
 
-from trellis.pipelines.samplers.adaptive_cfg import (
-    forecast_guidance,
-    cosine_sim,
-    adaptive_cfg_init,
-    adaptive_cfg_decide,
-)
+
+def _load_adaptive_cfg():
+    path = Path(__file__).resolve().parents[1] / "trellis/pipelines/samplers/adaptive_cfg.py"
+    spec = importlib.util.spec_from_file_location("adaptive_cfg_under_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_adaptive_cfg = _load_adaptive_cfg()
+forecast_guidance = _adaptive_cfg.forecast_guidance
+cosine_sim = _adaptive_cfg.cosine_sim
+adaptive_cfg_init = _adaptive_cfg.adaptive_cfg_init
+adaptive_cfg_decide = _adaptive_cfg.adaptive_cfg_decide
 
 
 def main() -> int:

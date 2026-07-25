@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  cpu-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install CPU test dependency
+        run: pip install --index-url https://download.pytorch.org/whl/cpu -r requirements-ci.txt
+      - name: Reject unresolved merge markers
+        run: |
+          if git grep -n -E '^(<<<<<<<|=======|>>>>>>>)' -- '*.py'; then
+            exit 1
+          fi
+      - name: Compile first-party source
+        run: python -m compileall -q trellis tests faster_utils_slat fft token_slat
+      - name: Run standalone CPU accelerator tests
+        run: |
+          python tests/test_hicache.py
+          python tests/test_adaptive_cfg.py
