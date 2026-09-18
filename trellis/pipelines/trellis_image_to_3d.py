@@ -526,3 +526,32 @@ class TrellisImageTo3DPipeline(Pipeline):
             self.faster_mode = "faster"
         print(f"[faster-trellis] acceleration = {self.faster_mode}", flush=True)
         return self
+
+    def acceleration_status(self) -> dict:
+        """Describe the configured acceleration without claiming performance.
+
+        The sparse-structure backend is read from the live sampler so a
+        post-``enable_faster_mode`` assignment is represented accurately.
+        """
+        mode = getattr(self, "faster_mode", "base")
+        ss = getattr(self, "sparse_structure_sampler", None)
+        if mode == "base":
+            return {
+                "enabled": False,
+                "mode": "base",
+                "backend": "none",
+                "stages": {
+                    "sparse_structure": "base",
+                    "slat": "base",
+                },
+            }
+        backend = getattr(ss, "_hicache_backend", "hermite")
+        return {
+            "enabled": True,
+            "mode": mode,
+            "backend": backend,
+            "stages": {
+                "sparse_structure": f"hicache:{backend}",
+                "slat": "carved_slat",
+            },
+        }

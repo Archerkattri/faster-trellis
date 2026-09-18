@@ -14,8 +14,12 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
-      - name: Install CPU test dependency
-        run: pip install --index-url https://download.pytorch.org/whl/cpu -r requirements-ci.txt
+      - name: Install CPU test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --index-url https://download.pytorch.org/whl/cpu -r requirements-ci.txt
+          pip install numpy tqdm
+          pip install --force-reinstall --no-deps "hicache-pp @ git+https://github.com/Archerkattri/hicache-plus-plus@master"
       - name: Reject unresolved merge markers
         run: |
           if git grep -n -E '^(<<<<<<<|=======|>>>>>>>)' -- '*.py'; then
@@ -27,3 +31,4 @@ jobs:
         run: |
           python tests/test_hicache.py
           python tests/test_adaptive_cfg.py
+          python tests/test_hicache_contract.py

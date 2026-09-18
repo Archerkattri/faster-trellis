@@ -24,6 +24,13 @@
 
 > **HiCache++ variant:** an exponential (DMD/Prony) forecast variant of this repo lives in [`faster-trellis-plus-plus`](https://github.com/Archerkattri/faster-trellis-plus-plus) — same carved-hybrid, with the sparse-structure velocity forecast on a Dynamic-Mode-Decomposition basis instead of the Hermite polynomial.
 
+## Sampler integration
+
+![faster-trellis sampler integration](assets/readme_flow.svg)
+
+Token carving and velocity forecasting are controlled separately. The Hermite backend acts only
+inside the TRELLIS flow loop and reports compute, forecast, and fallback steps.
+
 ## When to use this repo
 
 These repos are **complementary accelerators, not competing solutions** — each speeds up a *different*
@@ -81,6 +88,8 @@ git clone --recurse-submodules https://github.com/Archerkattri/faster-trellis
 cd faster-trellis
 # TRELLIS deps (CUDA toolchain required); see setup.sh for the full option list.
 . ./setup.sh --new-env --basic --xformers --flash-attn --spconv --nvdiffrast
+# Deployment-contract runtime (budget/telemetry/manifest):
+pip install "hicache-pp @ git+https://github.com/Archerkattri/hicache-plus-plus@master"
 ```
 
 ```python
@@ -88,6 +97,7 @@ from trellis.pipelines import TrellisImageTo3DPipeline
 
 pipeline = TrellisImageTo3DPipeline.from_pretrained("microsoft/TRELLIS-image-large").cuda()
 pipeline.enable_faster_mode()                         # ← the only added line
+print(pipeline.acceleration_status())               # backend + per-stage report
 
 outputs = pipeline.run(image, formats=["mesh", "gaussian", "radiance_field"])
 ```
@@ -116,7 +126,12 @@ export SPCONV_ALGO=native
 
 ---
 
-## Results
+## Historical results (as measured)
+
+The following card is retained as prior-run evidence from the stated benchmark setup. It is not a
+current acceptance result and does not establish a universal speedup, losslessness, or quality
+ordering. Re-run the manifest command in `example_faster.py` on the target GPU before making a new
+claim.
 
 Toys4K, **RTX 5090**, 25 steps/stage. Geometry is scored on the `formats=["mesh"]` decoder
 output with area-weighted surface sampling, after a globally-optimal (Go-ICP) similarity

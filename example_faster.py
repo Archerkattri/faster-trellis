@@ -1,5 +1,8 @@
 """Faster-TRELLIS image-to-3D example.
 
+Reproducibility manifest (identifiers and configuration, not a measured
+quality or speed claim) is available via ``--print-manifest``.
+
 Runs the standard TRELLIS image-to-3D pipeline (gaussian / radiance field /
 mesh / GLB / PLY outputs are all produced), adding a single call --
 ``pipeline.enable_faster_mode()`` -- that swaps in the training-free
@@ -39,6 +42,16 @@ from trellis.pipelines import TrellisImageTo3DPipeline
 from trellis.utils import render_utils, postprocessing_utils
 
 
+ACCELERATION_MANIFEST = {
+    "model_id": "microsoft/TRELLIS-image-large",
+    "default_mode": "faster",
+    "supported_modes": ["faster", "none"],
+    "ss_stage": "sparse_structure",
+    "slat_stage": "carved SLaT",
+    "gpu_acceptance_command": "python example_faster.py --mode faster",
+}
+
+
 def export_untextured_mesh(mesh, output_path):
     vertices = mesh.vertices.detach().cpu().numpy()
     faces = mesh.faces.detach().cpu().numpy()
@@ -54,6 +67,8 @@ def main():
     parser.add_argument("--mode", default="faster",
                         choices=["faster", "none"],
                         help="faster = the accelerated config (default); none = stock sampler")
+    parser.add_argument("--print-manifest", action="store_true",
+                        help="print the reproducibility manifest and exit")
     parser.add_argument("--output_dir", default="outputs_faster")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--ss_steps", type=int, default=25)
@@ -63,6 +78,11 @@ def main():
     parser.add_argument("--skip_video", action="store_true")
     parser.add_argument("--skip_glb", action="store_true")
     args = parser.parse_args()
+
+    if args.print_manifest:
+        import json
+        print(json.dumps(ACCELERATION_MANIFEST, indent=2, sort_keys=True))
+        return
 
     out = Path(args.output_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -74,6 +94,7 @@ def main():
     # ---- enable training-free acceleration ----
     pipeline.enable_faster_mode(args.mode)
     print(f"Faster-TRELLIS mode: {pipeline.faster_mode}")
+    print(f"acceleration: {pipeline.acceleration_status()}")
 
     image = Image.open(args.image_path)
 

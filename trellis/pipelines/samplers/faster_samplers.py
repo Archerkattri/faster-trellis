@@ -80,7 +80,8 @@ class FlowEulerGuidanceIntervalSampler_hicache(FlowEulerGuidanceIntervalSampler)
         steps: nominal step count used to size the cache schedule (the actual
             run length still comes from the ``steps`` passed to ``sample``).
         hicache_kwargs: overrides for the HiCache schedule
-            (``interval``/``max_order``/``first_enhance``/``end_enhance``/``sigma``).
+            (``interval``/``max_order``/``first_enhance``/``end_enhance``/``sigma``/
+``stage``/``budget``).
     """
 
     def __init__(

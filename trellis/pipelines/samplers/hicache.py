@@ -58,7 +58,29 @@ from __future__ import annotations
 import math
 from typing import Any, Dict, List, Optional
 
+import copy
+import json
+import time
+import uuid
+
 import torch
+from hicache_pp.budget import CacheBudget, CacheBudgetRuntime, RunIdentity, stable_digest
+
+
+# Public compatibility surface for TRELLIS integrations.  This checkout ships
+# the Hermite (polynomial) basis only; DMD lives in the sibling
+# faster-trellis-plus-plus repo.  The single-backend switch keeps lifecycle,
+# reset, and telemetry semantics identical across the two checkouts.
+HICACHE_BACKENDS = ("hermite",)
+
+
+def normalize_backend(backend: str) -> str:
+    """Return the supported forecast backend or raise a useful error."""
+    value = "hermite" if backend is None else str(backend).lower().strip()
+    if value not in HICACHE_BACKENDS:
+        choices = ", ".join(repr(item) for item in HICACHE_BACKENDS)
+        raise ValueError(f"HiCache backend must be one of {choices}, got {backend!r}")
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -98,6 +120,8 @@ def hicache_init(
     first_enhance: int = 2,
     end_enhance: Optional[int] = None,
     sigma: float = 0.5,
+    backend: str = "hermite",
+    stage: str = "unknown",
 ) -> Dict[str, Any]:
     """Create a fresh HiCache state dict for one sampling run.
 
@@ -110,6 +134,8 @@ def hicache_init(
     end_enhance : always compute steps with index ``>= end_enhance``
         (defaults to ``num_steps`` -> disabled).
     sigma : Hermite contraction factor in ``(0, 1)``.
+    backend : forecast basis; this checkout ships ``"hermite"`` only.
+    stage : telemetry label for the model stage owning this cache.
     """
     if interval < 1:
         raise ValueError("interval must be >= 1")
@@ -119,6 +145,7 @@ def hicache_init(
         # sigma == 1 is mathematically valid (pure Hermite) but the paper's
         # stability argument requires the strict contraction sigma in (0,1).
         raise ValueError(f"sigma must be in (0, 1), got {sigma}")
+    backend = normalize_backend(backend)
     return {
         "num_steps": int(num_steps),
         "interval": int(interval),
@@ -127,6 +154,8 @@ def hicache_init(
         "end_enhance": int(end_enhance if end_enhance is not None else num_steps),
         "sigma": float(sigma),
         "sigma_min": 1e-2,        # lower bound on the contraction factor sigma
+        "backend": backend,       # "hermite" (polynomial HiCache)
+        "stage": str(stage),      # telemetry only
         "step": 0,
         "counter": 0,            # forecasts since last compute
         "type": None,            # "full" | "forecast"
@@ -222,7 +251,64 @@ def hicache_forecast(state: Dict[str, Any]) -> torch.Tensor:
 # ---------------------------------------------------------------------------
 # Pipeline patching
 # ---------------------------------------------------------------------------
-def _patch_sampler(sampler, *, is_sparse: bool, cfg: Dict[str, Any]) -> None:
+def hicache_forecast_state(state: Dict[str, Any]) -> torch.Tensor:
+    """Forecast from the backend selected in ``state``.
+
+    This is the compatibility switch used by the sampler.  Keeping dispatch
+    here makes Hermite share lifecycle, reset, and telemetry semantics with
+    the sibling DMD checkout.
+    """
+    normalize_backend(state.get("backend", "hermite"))
+    return hicache_forecast(state)
+
+
+def _budget_memory_mb(value, is_sparse: bool):
+    value = getattr(value, "feats", value) if is_sparse else value
+    try:
+        return float(value.numel() * value.element_size()) / (1024.0 * 1024.0)
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def _ensure_budget_runtime(sampler, state, model, x_t, cond, stage, is_sparse):
+    runtime = getattr(sampler, "_budget_runtime", None)
+    if runtime is not None:
+        return runtime
+    state.setdefault("run_id", uuid.uuid4().hex)
+    model_id = f"{type(model).__module__}.{type(model).__qualname__}"
+    schedule = {
+        "num_steps": int(state["num_steps"]),
+        "interval": int(state["interval"]),
+        "first_enhance": int(state["first_enhance"]),
+        "end_enhance": int(state["end_enhance"]),
+        "backend": str(state["backend"]),
+        "stage": str(stage),
+    }
+    condition_shape = tuple(getattr(cond, "shape", ()))
+    token_source = getattr(x_t, "feats", x_t) if is_sparse else x_t
+    token_shape = tuple(getattr(token_source, "shape", ()))
+    identity = RunIdentity(
+        model_id=model_id,
+        run_id=state["run_id"],
+        schedule_digest=stable_digest(schedule),
+        cfg_branch="cfg-combined",
+        conditioning_id=stable_digest({"condition_shape": condition_shape}),
+        stage=str(stage),
+        token_layout_digest=stable_digest({"token_shape": token_shape}),
+        dtype=str(getattr(x_t, "dtype", "")),
+        device=str(getattr(x_t, "device", "")),
+    )
+    sampler._budget_runtime = CacheBudgetRuntime(
+        sampler._hicache_budget,
+        identity,
+        model_digest=stable_digest({"model_id": model_id}),
+        config_digest=stable_digest({"budget": sampler._hicache_budget.as_dict(), "schedule": schedule}),
+        input_digest=stable_digest({"token_shape": token_shape, "condition_shape": condition_shape}),
+    )
+    return sampler._budget_runtime
+
+
+def _patch_sampler(sampler, *, is_sparse: bool, cfg: Dict[str, Any], stage: str) -> None:
     """Install HiCache onto a single FlowEuler sampler instance.
 
     Wraps ``sample`` to (re)initialise per-run state and replaces
@@ -238,7 +324,24 @@ def _patch_sampler(sampler, *, is_sparse: bool, cfg: Dict[str, Any]) -> None:
     orig_get_pred = sampler._get_model_prediction
     orig_v_to_xstart = sampler._v_to_xstart_eps
 
-    def patched_sample(model, noise, *args, steps: int = 50, **kwargs):
+    budget = cfg.get("budget")
+    if budget is None:
+        budget = CacheBudget(
+            backend="hermite",
+            allowed_stages=(stage,),
+            max_horizon=cfg.get("max_horizon") or max(1, int(cfg["interval"]) - 1),
+            quality_preset="adapter-default",
+            max_memory_mb=cfg.get("max_memory_mb"),
+            audit_budget=cfg.get("audit_budget", 0),
+            fallback="full",
+        )
+    elif not isinstance(budget, CacheBudget):
+        budget = CacheBudget.from_mapping(budget)
+    sampler._hicache_budget = budget
+    sampler._hicache_backend = "hermite"
+    sampler._hicache_stage = stage
+
+    def _begin_run(steps: int) -> None:
         sampler._hicache = hicache_init(
             num_steps=steps,
             interval=cfg["interval"],
@@ -246,11 +349,81 @@ def _patch_sampler(sampler, *, is_sparse: bool, cfg: Dict[str, Any]) -> None:
             first_enhance=cfg["first_enhance"],
             end_enhance=cfg["end_enhance"],
             sigma=cfg["sigma"],
+            backend="hermite",
+            stage=stage,
         )
+        sampler._budget_runtime = None
+        sampler._last_hicache_manifest = None
+
+    def _end_run() -> None:
+        runtime = getattr(sampler, "_budget_runtime", None)
+        if runtime is not None:
+            sampler._last_hicache_manifest = runtime.manifest.as_dict()
+        sampler._budget_runtime = None
+        sampler._hicache = None
+
+    def _status() -> dict:
+        state = getattr(sampler, "_hicache", None)
+        if state is None:
+            return {
+                "enabled": False,
+                "backend": "none",
+                "stage": str(stage),
+                "full_steps": 0,
+                "forecast_steps": 0,
+            }
+        full_steps = len(state.get("activated_steps", ()))
+        return {
+            "enabled": True,
+            "backend": state.get("backend", "hermite"),
+            "stage": state.get("stage", stage),
+            "full_steps": full_steps,
+            "forecast_steps": max(int(state.get("step", 0)) - full_steps, 0),
+        }
+
+    def _configure(budget=None, *, max_horizon=None, max_memory_mb=None, audit_budget=0):
+        sampler._hicache_budget = budget if isinstance(budget, CacheBudget) else (
+            CacheBudget.from_mapping(budget) if budget is not None else sampler._hicache_budget)
+        if max_horizon is not None or max_memory_mb is not None or audit_budget:
+            current = sampler._hicache_budget.as_dict()
+            if max_horizon is not None:
+                current["max_horizon"] = max_horizon
+            if max_memory_mb is not None:
+                current["max_memory_mb"] = max_memory_mb
+            if audit_budget:
+                current["audit_budget"] = audit_budget
+            sampler._hicache_budget = CacheBudget.from_mapping(current)
+        return sampler
+
+    def _get_manifest():
+        manifest = getattr(sampler, "_last_hicache_manifest", None)
+        if manifest is None:
+            runtime = getattr(sampler, "_budget_runtime", None)
+            manifest = runtime.manifest.as_dict() if runtime is not None else None
+        return copy.deepcopy(manifest) if manifest is not None else None
+
+    def _save_manifest(destination):
+        manifest = _get_manifest()
+        if manifest is None:
+            raise RuntimeError("no completed HiCache run is available")
+        with open(destination, "w", encoding="utf-8") as handle:
+            json.dump(manifest, handle, indent=2, sort_keys=True, allow_nan=False)
+            handle.write("\n")
+        return destination
+
+    sampler._hicache_begin_run = _begin_run
+    sampler._hicache_end_run = _end_run
+    sampler.hicache_status = _status
+    sampler.configure_hicache_budget = _configure
+    sampler.get_hicache_manifest = _get_manifest
+    sampler.save_hicache_manifest = _save_manifest
+
+    def patched_sample(model, noise, *args, steps: int = 50, **kwargs):
+        _begin_run(steps)
         try:
             return orig_sample(model, noise, *args, steps=steps, **kwargs)
         finally:
-            sampler._hicache = None
+            _end_run()
 
     def patched_sample_once(model, x_t, t, t_prev, cond=None, **kwargs):
         state = getattr(sampler, "_hicache", None)
@@ -258,18 +431,44 @@ def _patch_sampler(sampler, *, is_sparse: bool, cfg: Dict[str, Any]) -> None:
             # Not inside a HiCache-managed run -> fall back to the original.
             return orig_sample_once(model, x_t, t, t_prev, cond, **kwargs)
 
-        decision = hicache_decide(state)
+        scheduled = hicache_decide(state)
+        runtime = _ensure_budget_runtime(sampler, state, model, x_t, cond, stage, is_sparse)
+        forecast_requested = scheduled == "forecast"
+        budget_decision = runtime.decide(
+            str(stage),
+            horizon=max(1, int(state.get("counter", 0))) if forecast_requested else 0,
+            method=runtime.budget.backend,
+            supported=True,
+            memory_mb=_budget_memory_mb(x_t, is_sparse),
+            force_full=(not forecast_requested or runtime.budget.backend == "full"),
+            audit=forecast_requested and runtime.audits_remaining > 0,
+            controller_selected=True,
+        )
+        serve_forecast = forecast_requested and budget_decision.mode == "forecast"
+        if forecast_requested and not serve_forecast:
+            # hicache_decide has already advanced its skip counter.  A guard or
+            # budgeted audit becomes a fresh anchor at this diffusion index.
+            state["type"] = "full"
+            state["counter"] = 0
+            if not state["activated_steps"] or state["activated_steps"][-1] != state["step"]:
+                state["activated_steps"].append(state["step"])
 
-        if decision == "full":
+        work_started = time.perf_counter()
+
+        if not serve_forecast:
             pred_x_0, pred_eps, pred_v = orig_get_pred(model, x_t, t, cond, **kwargs)
             feats = pred_v.feats if is_sparse else pred_v
             hicache_update_derivatives(state, feats.detach().clone())
             state["step"] += 1
+            runtime.record_measurement(
+                str(stage), "full",
+                wall_time_ms=(time.perf_counter() - work_started) * 1000.0,
+            )
             pred_x_prev = x_t - (t - t_prev) * pred_v
             return edict({"pred_x_prev": pred_x_prev, "pred_x_0": pred_x_0})
 
         # forecast step: rebuild the final velocity from cached derivatives.
-        feats_hat = hicache_forecast(state)
+        feats_hat = hicache_forecast_state(state)
         if is_sparse:
             pred_v = x_t.replace(feats_hat)
         else:
@@ -277,6 +476,10 @@ def _patch_sampler(sampler, *, is_sparse: bool, cfg: Dict[str, Any]) -> None:
         pred_x_0, _eps = orig_v_to_xstart(x_t=x_t, t=t, v=pred_v)
         pred_x_prev = x_t - (t - t_prev) * pred_v
         state["step"] += 1
+        runtime.record_measurement(
+            str(stage), state.get("backend", "hermite"),
+            wall_time_ms=(time.perf_counter() - work_started) * 1000.0,
+        )
         return edict({"pred_x_prev": pred_x_prev, "pred_x_0": pred_x_0})
 
     sampler.sample = patched_sample
@@ -300,6 +503,13 @@ def enable(pipeline, **kwargs):
     patch_slat : patch the SLaT sampler (default True).
     patch_sparse_structure : patch the sparse-structure sampler
         (default True).
+    stage : telemetry label for patched samplers; per-stage overrides
+        ``sparse_structure_stage`` / ``slat_stage`` (defaults
+        ``"sparse_structure"`` / ``"slat"``).
+    budget : explicit ``CacheBudget`` (or mapping); ``None`` keeps the
+        historical schedule while still emitting an identity-bound manifest.
+        ``max_horizon`` / ``max_memory_mb`` / ``audit_budget`` tune the
+        default envelope.
 
     Returns
     -------
@@ -311,18 +521,24 @@ def enable(pipeline, **kwargs):
         "first_enhance": int(kwargs.get("first_enhance", 2)),
         "end_enhance": kwargs.get("end_enhance", None),
         "sigma": float(kwargs.get("sigma", 0.5)),
+        "budget": kwargs.get("budget"),
+        "max_horizon": kwargs.get("max_horizon"),
+        "max_memory_mb": kwargs.get("max_memory_mb"),
+        "audit_budget": kwargs.get("audit_budget", 0),
     }
+    stage_ss = kwargs.get("sparse_structure_stage", kwargs.get("stage", "sparse_structure"))
+    stage_slat = kwargs.get("slat_stage", kwargs.get("stage", "slat"))
     patch_slat = kwargs.get("patch_slat", True)
     patch_ss = kwargs.get("patch_sparse_structure", True)
 
     patched: List[str] = []
 
     if patch_ss and getattr(pipeline, "sparse_structure_sampler", None) is not None:
-        _patch_sampler(pipeline.sparse_structure_sampler, is_sparse=False, cfg=cfg)
+        _patch_sampler(pipeline.sparse_structure_sampler, is_sparse=False, cfg=cfg, stage=stage_ss)
         patched.append("sparse_structure_sampler")
 
     if patch_slat and getattr(pipeline, "slat_sampler", None) is not None:
-        _patch_sampler(pipeline.slat_sampler, is_sparse=True, cfg=cfg)
+        _patch_sampler(pipeline.slat_sampler, is_sparse=True, cfg=cfg, stage=stage_slat)
         patched.append("slat_sampler")
 
     if not patched:
